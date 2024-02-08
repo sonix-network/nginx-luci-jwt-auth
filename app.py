@@ -54,8 +54,10 @@ app = flask.Flask(__name__)
 def luci_login():
     hostname = socket.gethostname()
     jwt_assertion = flask.request.headers.get('X-Pomerium-Jwt-Assertion', None)
-    if not jwt:
-        return 'No JWT provided\n', 403
+    response = flask.make_response(flask.redirect('/cgi-bin/luci'))
+    if not jwt_assertion:
+        # No JWT, redirect to login page
+        return response
     try:
         claims = jwt.decode(
                 jwt_assertion,
@@ -67,7 +69,6 @@ def luci_login():
         return 'Invalid JWT\n', 403
 
     ubus.connect('/var/run/ubus/ubus.sock')
-    response = flask.make_response(flask.redirect('/cgi-bin/luci'))
     try:
         session_id = flask.request.cookies.get('sysauth_https')
         if session_id:
