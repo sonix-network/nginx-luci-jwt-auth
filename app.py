@@ -62,7 +62,10 @@ def luci_login():
         claims = jwt.decode(
                 jwt_assertion,
                 jwt_public_key,
-                audience=f'{hostname}.local.sonix.network',
+                audience=[
+                    f'{hostname}.local.sonix.network',
+                    f'{hostname}-fallback.local.sonix.network',
+                ],
                 strict_aud=True,
                 algorithms=['ES256'])
     except jwt.exceptions.PyJWTError:
