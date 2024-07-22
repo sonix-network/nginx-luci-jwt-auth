@@ -7,7 +7,10 @@ import secrets
 import socket
 import ubus
 
+import ctypes
+import json
 import jwt
+import time
 
 
 jwt_public_key = '''
@@ -16,6 +19,43 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE/H6ctMmPwKnSC4dqeBAkrP28zj8J
 wniLZHDeSbxG5F68C8aGSJ7uqBfQcYYzUGWVS8OqHcVDgsKo5Yu4Dx8kGA==
 -----END PUBLIC KEY-----
 '''
+
+
+class InvalidJWT(Exception):
+    pass
+
+
+def check_jwt(jwt_str, hostname):
+    jv = ctypes.POINTER(jwt.struct_jwt_valid)()
+    jw = ctypes.POINTER(jwt.struct_jwt)()
+    assert jwt.jwt_valid_new(ctypes.byref(jv), jwt.JWT_ALG_ES256) == 0, 'jwt_valid_new failed'
+
+    jwt.jwt_valid_set_headers(jv, 1)
+    jwt.jwt_valid_set_now(jv, int(time.time()))
+    ret = jwt.jwt_decode(ctypes.byref(jw), jwt_str, jwt_public_key, len(jwt_public_key))
+    if ret != 0:
+        print('failed to decode jwt, invalid key?')
+        raise InvalidJWT('could not decode jwt')
+
+    user = None
+    try:
+        jwt.jwt_valid_add_grants_json(jv, json.dumps({
+            'aud': f'{hostname}.local.sonix.network',
+            }))
+        err = jwt.jwt_validate(jw, jv)
+        if err == jwt.JWT_VALIDATION_GRANT_MISMATCH:
+            jwt.jwt_valid_add_grants_json(jv, json.dumps({
+                'aud': f'{hostname}-fallback.local.sonix.network',
+                }))
+            err = jwt.jwt_validate(jw, jv)
+        if err != 0:
+            print('failed to validate jwt:', jwt.jwt_exception_str(err))
+            raise InvalidJWT('could not decode jwt')
+        user = jwt.jwt_get_grant(jw, "user").decode()
+    finally:
+        jwt.jwt_free(jw)
+        jwt.jwt_valid_free(jv)
+    return user
 
 
 def merge_acl(acls, acl, name):
@@ -59,16 +99,8 @@ def luci_login():
         # No JWT, redirect to login page
         return response
     try:
-        claims = jwt.decode(
-                jwt_assertion,
-                jwt_public_key,
-                audience=[
-                    f'{hostname}.local.sonix.network',
-                    f'{hostname}-fallback.local.sonix.network',
-                ],
-                strict_aud=True,
-                algorithms=['ES256'])
-    except jwt.exceptions.PyJWTError:
+        user = check_jwt(jwt_assertion, hostname)
+    except InvalidJWT:
         return 'Invalid JWT\n', 403
 
     ubus.connect('/var/run/ubus/ubus.sock')
@@ -82,7 +114,7 @@ def luci_login():
                 session_id = None
         if session_id is None:
             session_id = ubus.call('session', 'create', {'timeout': 3600})[0]['ubus_rpc_session']
-            ubus.call('session', 'set', {'ubus_rpc_session': session_id, 'values': {'username': claims['user']}})
+            ubus.call('session', 'set', {'ubus_rpc_session': session_id, 'values': {'username': user}})
             ubus.call('session', 'set', {'ubus_rpc_session': session_id, 'values': {'token': secrets.token_hex(16)}})
             for scope, objects in load_acl_grants().items():
                 ubus.call('session', 'grant', {'ubus_rpc_session': session_id, 'scope': scope, 'objects': objects})
